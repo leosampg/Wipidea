@@ -1,5 +1,5 @@
 /* Wipidea service worker — caminhos relativos para funcionar em /Wipidea/ no GitHub Pages */
-const CACHE = "wipidea-v1";
+const CACHE = "wipidea-v2";
 const ASSETS = [
   "./",
   "./index.html",

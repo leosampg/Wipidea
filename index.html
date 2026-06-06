@@ -213,6 +213,29 @@
     transition:opacity .2s,transform .25s;transform:translateX(-50%) translateY(20px)}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
+  /* lock screen */
+  .lock-screen{position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;
+    padding:24px;background:radial-gradient(120% 100% at 50% 0%, var(--bg-2), var(--bg))}
+  .lock-card{width:100%;max-width:320px;text-align:center}
+  .lock-card h1{margin:14px 0 4px;font-size:24px}
+  .lock-logo{display:flex;justify-content:center}
+  .lock-card form{margin-top:18px;display:flex;flex-direction:column;gap:12px}
+  .lock-card input[type=password]{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;
+    padding:13px 15px;font-size:16px;outline:none;text-align:center;color:var(--text);width:100%}
+  .lock-card input[type=password]:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+  .lock-card .primary{padding:13px;border-radius:12px;width:100%}
+  .lock-err{color:var(--bad);font-size:12.5px;min-height:16px;margin:2px 0 0}
+  .link-btn{margin-top:14px;color:var(--muted);font-size:12.5px;text-decoration:underline;background:none}
+  .ack{display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:12px;color:var(--muted);text-align:left;cursor:pointer}
+  .ack input{width:auto;margin-top:1px;flex:none}
+  /* backup banner */
+  .banner{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:120;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:center;
+    max-width:calc(100vw - 32px);padding:12px 16px;background:var(--surface);
+    border:1px solid var(--border-2);border-radius:14px;box-shadow:var(--shadow);font-size:13px}
+  .banner-actions{display:flex;gap:8px}
+  .sm{padding:7px 13px;font-size:12.5px;border-radius:9px}
+
   body.dragging-active{user-select:none;cursor:grabbing}
   body.dragging-active .card:not(.dragging){pointer-events:none}
 
@@ -268,11 +291,59 @@
   ];
   const stageName = id => (STAGES.find(s=>s.id===id)||{}).name || id;
 
-  let state = load() || { ideas:[], theme:"dark", coolingHours:48, seeded:false };
+  const LOGO_SVG = '<svg width="36" height="36" viewBox="0 0 24 24" fill="none"><path d="M3 4.5h18l-7 8.5v6l-4 2v-8L3 4.5Z" stroke="#0a84ff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+
+  let state = null;
   let query = "";
 
-  function load(){ try{ return JSON.parse(localStorage.getItem(KEY)); }catch{ return null; } }
-  function save(){ localStorage.setItem(KEY, JSON.stringify(state)); }
+  /* Persistência: texto puro por padrão; AES-GCM (Web Crypto) quando o cadeado está ativo. */
+  const SKEY = "wipidea.secure";
+  const ITER = 250000;
+  const _enc = new TextEncoder(), _dec = new TextDecoder();
+  let cryptoKey = null, secSalt = null, lockEnabled = false;
+  const cryptoOK = !!(window.crypto && window.crypto.subtle && window.isSecureContext);
+  const _b64 = buf => btoa(String.fromCharCode.apply(null, new Uint8Array(buf)));
+  const _unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+  function defaultState(){ return { ideas:[], theme:"dark", coolingHours:48, seeded:false, lastExportAt:0, remindSnoozeAt:0 }; }
+  function load(){ try{ return JSON.parse(localStorage.getItem(KEY)); }catch(e){ return null; } }
+  function save(){
+    if(lockEnabled && cryptoKey){ persistSecure().catch(function(){}); }
+    else { try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
+  }
+  async function deriveKey(pass, salt){
+    const base = await crypto.subtle.importKey("raw", _enc.encode(pass), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey({ name:"PBKDF2", salt:salt, iterations:ITER, hash:"SHA-256" }, base, { name:"AES-GCM", length:256 }, false, ["encrypt","decrypt"]);
+  }
+  async function persistSecure(){
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name:"AES-GCM", iv:iv }, cryptoKey, _enc.encode(JSON.stringify(state)));
+    localStorage.setItem(SKEY, JSON.stringify({ v:1, salt:_b64(secSalt), iv:_b64(iv), ct:_b64(ct) }));
+  }
+  async function enableLock(pass){
+    secSalt = crypto.getRandomValues(new Uint8Array(16));
+    cryptoKey = await deriveKey(pass, secSalt);
+    lockEnabled = true;
+    await persistSecure();
+    localStorage.removeItem(KEY);
+  }
+  async function changePass(pass){
+    secSalt = crypto.getRandomValues(new Uint8Array(16));
+    cryptoKey = await deriveKey(pass, secSalt);
+    await persistSecure();
+  }
+  function disableLock(){
+    lockEnabled = false; cryptoKey = null; secSalt = null;
+    localStorage.removeItem(SKEY);
+    save();
+  }
+  function lockNow(){
+    if(!lockEnabled) return;
+    cryptoKey = null; state = null;
+    document.getElementById("modalRoot").innerHTML = "";
+    board.innerHTML = "";
+    showLock();
+  }
 
   /* ===================== Helpers ===================== */
   const $ = s => document.querySelector(s);
@@ -601,13 +672,57 @@
       <hr/>
       <div class="set-row"><span>Backup dos dados</span><div class="row"><button class="ghost" data-act="export">Exportar</button><button class="ghost" data-act="import">Importar</button></div></div>
       <p class="muted xsmall" style="margin-top:8px">Tudo é salvo localmente no navegador (LocalStorage).</p>
+      ${securityRowsHtml()}
       <div style="margin-top:16px"><button class="ghost danger" data-act="reset">Apagar tudo</button></div>
     </div>`);
     ov.querySelectorAll("[data-theme]").forEach(b=>b.addEventListener("click",()=>{ setTheme(b.dataset.theme); ov.querySelectorAll("[data-theme]").forEach(x=>x.classList.toggle("on",x===b)); }));
     ov.querySelector("#coolH").addEventListener("change", e=>{ state.coolingHours=Math.max(0,Math.min(336,+e.target.value||0)); save(); renderBoard(); });
     ov.querySelector('[data-act="export"]').addEventListener("click", exportData);
     ov.querySelector('[data-act="import"]').addEventListener("click", importData);
-    ov.querySelector('[data-act="reset"]').addEventListener("click",()=>{ if(confirm("Apagar TODAS as ideias e configurações?")){ localStorage.removeItem(KEY); location.reload(); }});
+    ov.querySelector('[data-act="reset"]').addEventListener("click",()=>{ if(confirm("Apagar TODAS as ideias e configurações?")){ localStorage.removeItem(KEY); localStorage.removeItem(SKEY); location.reload(); }});
+    const eb=ov.querySelector('[data-act="enablelock"]'); if(eb) eb.addEventListener("click", ()=>{ closeTop(); openLockSetup("enable"); });
+    const cb=ov.querySelector('[data-act="changepass"]'); if(cb) cb.addEventListener("click", ()=>{ closeTop(); openLockSetup("change"); });
+    const lb=ov.querySelector('[data-act="locknow"]'); if(lb) lb.addEventListener("click", ()=>{ closeTop(); lockNow(); });
+    const db=ov.querySelector('[data-act="disablelock"]'); if(db) db.addEventListener("click", ()=>{ if(confirm("Desativar o cadeado? Seus dados voltam a ficar sem senha neste aparelho.")){ disableLock(); closeTop(); toast("Cadeado desativado"); } });
+  }
+
+  function securityRowsHtml(){
+    if(!cryptoOK) return '<hr/><div class="set-row"><span>Cadeado com senha</span><span class="muted small">Disponível no site (https)</span></div>';
+    if(lockEnabled) return '<hr/>'
+      + '<div class="set-row"><span>🔒 Cadeado ativo</span><span class="muted small">Pede senha ao abrir</span></div>'
+      + '<div class="row" style="margin-top:10px;flex-wrap:wrap"><button class="ghost" data-act="changepass">Trocar senha</button><button class="ghost" data-act="locknow">Bloquear agora</button><button class="ghost danger" data-act="disablelock">Desativar</button></div>';
+    return '<hr/>'
+      + '<div class="set-row"><span>Cadeado com senha</span><button class="ghost" data-act="enablelock">Ativar</button></div>'
+      + '<p class="muted xsmall" style="margin-top:8px">Criptografa suas ideias neste aparelho (AES-256). Sem a senha, ninguém abre — nem com o celular destravado.</p>';
+  }
+
+  function openLockSetup(mode){
+    const ov=modal('<div>'
+      + '<div class="modal-head"><h2>'+(mode==="enable"?"Ativar cadeado":"Trocar senha")+'</h2><button class="icon" data-close>✕</button></div>'
+      + (mode==="enable"
+          ? '<p class="small">Sua senha criptografa as ideias <b>neste aparelho</b> e não vai para lugar nenhum. Por isso, se você esquecer, <b>não há como recuperar</b> os dados (a menos que tenha um backup exportado).</p>'
+          : '<p class="small">Defina a nova senha. Os dados serão recriptografados.</p>')
+      + '<form id="lockSetup" autocomplete="off">'
+      + '<input type="password" id="np1" placeholder="'+(mode==="enable"?"Crie uma senha":"Nova senha")+'" autocomplete="new-password"/>'
+      + '<input type="password" id="np2" placeholder="Repita a senha" autocomplete="new-password" style="margin-top:10px"/>'
+      + (mode==="enable" ? '<label class="ack"><input type="checkbox" id="ackChk"/> <span>Entendo que, sem a senha, os dados não podem ser recuperados.</span></label>' : '')
+      + '<p class="lock-err" id="setErr"></p>'
+      + '<div class="row end"><button type="button" class="ghost" data-close>Cancelar</button><button class="primary" type="submit">'+(mode==="enable"?"Ativar cadeado":"Salvar")+'</button></div>'
+      + '</form></div>');
+    const f=ov.querySelector("#lockSetup"), err=ov.querySelector("#setErr");
+    ov.querySelector("#np1").focus();
+    f.addEventListener("submit", async e=>{
+      e.preventDefault(); err.textContent="";
+      const p1=ov.querySelector("#np1").value, p2=ov.querySelector("#np2").value, ack=ov.querySelector("#ackChk");
+      if(p1.length<4){ err.textContent="Use ao menos 4 caracteres."; return; }
+      if(p1!==p2){ err.textContent="As senhas não coincidem."; return; }
+      if(mode==="enable" && ack && !ack.checked){ err.textContent="Confirme que entendeu o aviso."; return; }
+      const btn=f.querySelector("button[type=submit]"); btn.disabled=true; btn.textContent="Processando…";
+      try{
+        if(mode==="enable"){ await enableLock(p1); } else { await changePass(p1); }
+        closeTop(); toast(mode==="enable"?"Cadeado ativado 🔒":"Senha atualizada");
+      }catch(e2){ err.textContent="Erro ao processar. Tente de novo."; btn.disabled=false; btn.textContent=(mode==="enable"?"Ativar cadeado":"Salvar"); }
+    });
   }
 
   /* ===================== Tema, backup, toast ===================== */
@@ -617,6 +732,8 @@
     const mt=document.querySelector('meta[name=theme-color]'); if(mt) mt.setAttribute("content", t==="dark"?"#000000":"#f2f2f7"); }
 
   function exportData(){
+    state.lastExportAt = now(); save();
+    const bn=document.getElementById("backupBanner"); if(bn) bn.remove();
     const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
     a.download="wipidea-backup-"+new Date().toISOString().slice(0,10)+".json"; a.click();
@@ -627,7 +744,7 @@
     inp.onchange=()=>{ const f=inp.files[0]; if(!f) return; const rd=new FileReader();
       rd.onload=()=>{ try{ const d=JSON.parse(rd.result);
         if(!d||!Array.isArray(d.ideas)) throw 0;
-        state=Object.assign({theme:"dark",coolingHours:48,seeded:true}, d); save(); setTheme(state.theme); closeTop(); renderBoard(); toast("Backup importado ✓");
+        state=Object.assign(defaultState(), d); save(); setTheme(state.theme); closeTop(); renderBoard(); toast("Backup importado ✓");
       }catch{ alert("Arquivo inválido."); } };
       rd.readAsText(f); };
     inp.click();
@@ -656,20 +773,108 @@
   $("#search").addEventListener("input", e=>{ query=e.target.value.toLowerCase(); renderBoard(); });
 
   document.addEventListener("keydown", e=>{
+    if(document.getElementById("lockScreen")) return;
     if(e.key==="Escape"){ if(modalOpen()) closeTop(); return; }
     const tag=(e.target.tagName||"").toLowerCase();
     if(tag==="input"||tag==="textarea"||e.target.isContentEditable) return;
+    if(!state) return;
     if(e.key==="n"||e.key==="N"){ if(!modalOpen()){ e.preventDefault(); openCapture(); } }
     if(e.key==="/"){ e.preventDefault(); $("#search").focus(); }
   });
 
   // atualiza contadores de tempo / desbloqueio periodicamente
-  setInterval(()=>{ if(!drag && !modalOpen()) renderBoard(); }, 60000);
+  setInterval(()=>{ if(!drag && !modalOpen() && state) renderBoard(); }, 60000);
+
+  /* ===================== Cadeado (tela de bloqueio) ===================== */
+  function showLock(opts){
+    opts = opts || {};
+    removeLock();
+    const ov = document.createElement("div"); ov.className="lock-screen"; ov.id="lockScreen";
+    if(opts.insecure){
+      ov.innerHTML = '<div class="lock-card"><div class="lock-logo">'+LOGO_SVG+'</div><h1>Wipidea</h1>'
+        + '<p class="muted small">Seus dados estão criptografados. Abra o app pelo endereço seguro (https) para desbloquear.</p></div>';
+      document.body.appendChild(ov); return;
+    }
+    ov.innerHTML = '<div class="lock-card"><div class="lock-logo">'+LOGO_SVG+'</div><h1>Wipidea</h1>'
+      + '<p class="muted small">Digite sua senha para desbloquear</p>'
+      + '<form id="lockForm" autocomplete="off">'
+      + '<input type="password" id="lockPass" placeholder="Senha" autocomplete="current-password"/>'
+      + '<button class="primary" type="submit">Desbloquear</button>'
+      + '<p class="lock-err" id="lockErr"></p></form>'
+      + '<button class="link-btn" id="lockForgot">Esqueci minha senha</button></div>';
+    document.body.appendChild(ov);
+    const f=ov.querySelector("#lockForm"), pass=ov.querySelector("#lockPass"), err=ov.querySelector("#lockErr");
+    pass.focus();
+    f.addEventListener("submit", async e=>{
+      e.preventDefault(); err.textContent="";
+      const btn=f.querySelector("button"); btn.disabled=true; btn.textContent="Desbloqueando…";
+      await tryUnlock(pass.value, err);
+      if(document.getElementById("lockScreen")){ btn.disabled=false; btn.textContent="Desbloquear"; pass.focus(); pass.select(); }
+    });
+    ov.querySelector("#lockForgot").addEventListener("click", forgotPass);
+  }
+  function removeLock(){ const e=document.getElementById("lockScreen"); if(e) e.remove(); }
+  async function tryUnlock(pass, errEl){
+    let rec; try{ rec = JSON.parse(localStorage.getItem(SKEY)); }catch(e){ errEl.textContent="Dados corrompidos."; return; }
+    try{
+      const salt=_unb64(rec.salt);
+      const key=await deriveKey(pass, salt);
+      const pt=await crypto.subtle.decrypt({ name:"AES-GCM", iv:_unb64(rec.iv) }, key, _unb64(rec.ct));
+      state=JSON.parse(_dec.decode(pt));
+      cryptoKey=key; secSalt=salt; lockEnabled=true;
+      removeLock(); finishBoot();
+    }catch(e){ errEl.textContent="Senha incorreta. Tente de novo."; }
+  }
+  function forgotPass(){
+    const ov=modal('<div><div class="modal-head"><h2>Esqueci a senha</h2><button class="icon" data-close>✕</button></div>'
+      + '<p class="small">Por segurança, os dados são criptografados e <b>não podem ser recuperados sem a senha</b> — nem por mim, nem pelo navegador.</p>'
+      + '<p class="small">Se você tem um arquivo de <b>backup</b> exportado antes, dá para recomeçar e importá-lo. Isso apaga os dados bloqueados atuais.</p>'
+      + '<div class="row end"><button class="ghost" data-close>Voltar</button><button class="ghost danger" data-act="reset">Apagar e recomeçar</button></div></div>');
+    ov.querySelector('[data-act="reset"]').addEventListener("click", ()=>{
+      if(confirm("Apagar os dados bloqueados e recomeçar? Isto não pode ser desfeito.")){
+        localStorage.removeItem(SKEY); localStorage.removeItem(KEY); location.reload();
+      }
+    });
+  }
+
+  /* ===================== Lembrete de backup ===================== */
+  function maybeBackupReminder(){
+    const WEEK=7*24*3600*1000, DAY=24*3600*1000;
+    if(!state.ideas.length) return;
+    const sinceExport = now() - (state.lastExportAt || 0);
+    const snoozedRecently = now() - (state.remindSnoozeAt || 0) < DAY;
+    if(sinceExport > WEEK && !snoozedRecently) showBackupBanner();
+  }
+  function showBackupBanner(){
+    if(document.getElementById("backupBanner")) return;
+    const b=document.createElement("div"); b.className="banner"; b.id="backupBanner";
+    b.innerHTML = '<span>🛟 Faça um backup das suas ideias — elas ficam só neste aparelho.</span>'
+      + '<span class="banner-actions"><button class="primary sm" data-b="exp">Exportar backup</button><button class="ghost sm" data-b="later">Depois</button></span>';
+    document.body.appendChild(b);
+    b.querySelector('[data-b="exp"]').addEventListener("click", ()=>{ exportData(); });
+    b.querySelector('[data-b="later"]').addEventListener("click", ()=>{ state.remindSnoozeAt=now(); save(); b.remove(); });
+  }
 
   /* ===================== Boot ===================== */
-  seed();
-  setTheme(state.theme||"dark");
-  renderBoard();
+  function finishBoot(){
+    state = Object.assign(defaultState(), state || {});
+    if(!state.lastExportAt){ state.lastExportAt = now(); }
+    seed();
+    setTheme(state.theme || "dark");
+    renderBoard();
+    save();
+    maybeBackupReminder();
+  }
+  function boot(){
+    if(localStorage.getItem(SKEY)){
+      lockEnabled = true;
+      showLock(cryptoOK ? {} : { insecure:true });
+      return;
+    }
+    state = load() || defaultState();
+    finishBoot();
+  }
+  boot();
 })();
 </script>
 <script>
