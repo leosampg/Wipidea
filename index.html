@@ -4,6 +4,14 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 <title>Wipidea</title>
+<meta name="description" content="Funil visual para capturar, resfriar, avaliar e executar ideias." />
+<meta name="theme-color" content="#000000" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Wipidea" />
 <style>
   /* ============ Design tokens (Apple-inspired, monochromático + 1 acento) ============ */
   :root[data-theme="dark"]{
@@ -605,7 +613,8 @@
   /* ===================== Tema, backup, toast ===================== */
   const sun=`<circle cx="12" cy="12" r="4.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>`;
   const moon=`<path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>`;
-  function setTheme(t){ state.theme=t; save(); document.documentElement.dataset.theme=t; $("#themeIcon").innerHTML = t==="dark"?moon:sun; }
+  function setTheme(t){ state.theme=t; save(); document.documentElement.dataset.theme=t; $("#themeIcon").innerHTML = t==="dark"?moon:sun;
+    const mt=document.querySelector('meta[name=theme-color]'); if(mt) mt.setAttribute("content", t==="dark"?"#000000":"#f2f2f7"); }
 
   function exportData(){
     const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
@@ -662,6 +671,14 @@
   setTheme(state.theme||"dark");
   renderBoard();
 })();
+</script>
+<script>
+  /* PWA: registra o service worker (só ativa via http/https — no GitHub Pages funciona) */
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function(){
+      navigator.serviceWorker.register("sw.js").catch(function(){});
+    });
+  }
 </script>
 </body>
 </html>
